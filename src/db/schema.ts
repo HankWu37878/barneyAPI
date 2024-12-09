@@ -63,8 +63,8 @@ export const adminTable = pgTable(
     {
       adminId: uuid("adminid").defaultRandom().primaryKey(),
       adminName:  varchar("adminname", { length: 30 }).notNull(),
-      password: varchar("password", { length: 100 }).notNull(),
-      ingredientId: integer("branchid")
+      password: varchar("adminpassword", { length: 100 }).notNull(),
+      branchId: uuid("branchid")
         .notNull()
         .references(() => ingredientTable.ingredientId, {
             onDelete: "cascade",
@@ -158,7 +158,7 @@ export const adminTable = pgTable(
   );
 
   export const orderTable = pgTable(
-    "order_table",
+    "memberorder",
     {
         memberId: uuid("memberid")
         .notNull()
@@ -170,12 +170,17 @@ export const adminTable = pgTable(
         .references(() => recipeTable.recipeId, {
             onDelete: "cascade",
         }),
+        branchId: uuid("branchid")
+        .notNull()
+        .references(() => branchTable.branchId, {
+            onDelete: "cascade",
+            }),
         time: timestamp("time"),
-        type:  varchar("type", { length: 10 }).notNull(),
+        type:  varchar("ordertype", { length: 10 }).notNull(),
     },
     (table) => {
         return {
-            pk: primaryKey({ columns: [table.memberId, table.recipeId] }),
+            pk: primaryKey({ columns: [table.memberId, table.time] }),
           };
       }
   );

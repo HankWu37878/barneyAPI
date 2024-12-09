@@ -131,6 +131,7 @@ app.post('/api/postOrder', async(req, res) => {
     const type = req.body.type;
     const recipeId = req.body.recipeId;
     const memberId = req.body.memberId;
+    const branchId = req.body.branchId;
 
     const [result] = await db.select().from(memberAccountTable).where(eq(memberAccountTable.memberId, memberId));
 
@@ -139,7 +140,7 @@ app.post('/api/postOrder', async(req, res) => {
     }
     else {
         try {
-                await db.insert(orderTable).values({recipeId, memberId, type});
+                await db.insert(orderTable).values({branchId, recipeId, memberId, type});
                 res.status(200).send({msg: "post order ok"});
             } catch(err) {
                 console.log(err);
@@ -148,43 +149,44 @@ app.post('/api/postOrder', async(req, res) => {
     }
 });
 
-// app.post('/api/postCustomizedOrder', async(req, res) => {
-//     const type = req.body.type;
-//     const memberId = req.body.memberId;
-//     const addItemList: AddItem[] = req.body.addItemList;
-//     const addIngredientList: AddIngredient[] = req.body.addIngredientList;
-//     let concentration = 0
-//     let totalAmount = 0
-//     let alcoholAmount = 0
+app.post('/api/postCustomizedOrder', async(req, res) => {
+    const type = req.body.type;
+    const memberId = req.body.memberId;
+    const addItemList: AddItem[] = req.body.addItemList;
+    const addIngredientList: AddIngredient[] = req.body.addIngredientList;
+    let concentration = 0
+    let totalAmount = 0
+    let alcoholAmount = 0
 
-//     const [result] = await db.select().from(memberAccountTable).where(eq(memberAccountTable.memberId, memberId));
+    const [result] = await db.select().from(memberAccountTable).where(eq(memberAccountTable.memberId, memberId));
 
-//     if (!result) {
-//         res.status(400).send({msg: "user not found"});
-//     }
-//     else {
-//         try {
-//                 const [result] = await db.insert(customizedOrderTable).values({memberId, concentration, type}).returning({customizedOrderId: customizedOrderTable.customizedOrderId});
-//                 addItemList.forEach(async(addItem) => {
-//                     totalAmount += addItem.amount;
-//                     const [item] = await db.select({concentration: itemTable.concentration}).from(itemTable).where(eq(addItem.itemId, itemTable.itemId)).execute();
-//                     if (item) {
-//                         alcoholAmount += item.concentration ?? 0;
-//                         await db.insert(addItemTable).values({customizedOrderId: result.customizedOrderId, itemId: addItem.itemId, amount: addItem.amount});
-//                     } 
+    if (!result) {
+        res.status(400).send({msg: "user not found"});
+    }
+    else {
+        try {
+                const [result] = await db.insert(customizedOrderTable).values({memberId, concentration, type}).returning({customizedOrderId: customizedOrderTable.customizedOrderId});
+                addItemList.forEach(async(addItem) => {
+                    totalAmount += addItem.amount;
+                    const [item] = await db.select({concentration: itemTable.concentration}).from(itemTable).where(eq(itemTable.itemId, addItem.itemId)).execute();
+                    if (item) {
+                        alcoholAmount += item.concentration ?? 0;
+                        await db.insert(addItemTable).values({customizedOrderId: result.customizedOrderId, itemId: addItem.itemId, amount: addItem.amount});
+                    } 
                     
-//                 });
-//                 addIngredientList.forEach(async(addIngredient) => {
-//                     await db.insert(addIngredientTable).values({customizedOrderId: result.customizedOrderId, ingredientId: addIngredient.ingredientId, amount: addIngredient.amount});
-//                 });
+                });
+                addIngredientList.forEach(async(addIngredient) => {
+                    await db.insert(addIngredientTable).values({customizedOrderId: result.customizedOrderId, ingredientId: addIngredient.ingredientId, amount: addIngredient.amount});
+                });
 
-//                 res.status(200).send({msg: "post customized order ok"});
-//             } catch(err) {
-//                 console.log(err);
-//                 res.status(400).send({msg: "post customized order fail"});
-//             }
-//     }
-// });
+                await db.update(customizedOrderTable).set({concentration});
+                res.status(200).send({msg: "post customized order ok"});
+            } catch(err) {
+                console.log(err);
+                res.status(400).send({msg: "post customized order fail"});
+            }
+    }
+});
 
 
 
