@@ -2,7 +2,7 @@ import bodyParser from "body-parser";
 import cors from "cors";
 import express from "express";
 import { db } from "./db";
-import { addIngredientTable, addItemTable, branchTable, customizedOrderTable, itemTable, memberAccountTable, orderTable, recipeTable } from "./db/schema";
+import { addIngredientTable, addItemTable, branchTable, customizedOrderTable, itemTable, memberAccountTable, orderTable, recipeTable, reserveTable } from "./db/schema";
 import bcrypt from "bcryptjs";
 import { and, eq, or } from "drizzle-orm";
 import {
@@ -89,11 +89,11 @@ app.post('/api/login', async(req, res) => {
     const email = req.body.email;
     const password = req.body.password;
 
-    const [result] = await db.select({password: memberAccountTable.password, fname: memberAccountTable.fname, lname: memberAccountTable.lname, gender: memberAccountTable.gender, email: memberAccountTable.email, phone: memberAccountTable.memberPhone}).from(memberAccountTable).where(eq(memberAccountTable.email, email));
+    const [result] = await db.select({id: memberAccountTable.memberId, password: memberAccountTable.password, fname: memberAccountTable.fname, lname: memberAccountTable.lname, gender: memberAccountTable.gender, email: memberAccountTable.email, phone: memberAccountTable.memberPhone}).from(memberAccountTable).where(eq(memberAccountTable.email, email));
 
     const isValid = await bcrypt.compare(password, result.password ?? "");
     if (isValid) {
-        res.status(200).send( {success: true, fname: result.fname, lname: result.lname, gender: result.gender, phone: result.phone} );
+        res.status(200).send( {success: true, fname: result.fname, lname: result.lname, gender: result.gender, phone: result.phone, id: result.id} );
     }
     else {
         res.status(400).send({success: false});
@@ -129,24 +129,60 @@ app.post('/api/signup', async(req, res) => {
 
 app.post('/api/postOrder', async(req, res) => {
     const type = req.body.type;
-    const recipeId = req.body.recipeId;
     const memberId = req.body.memberId;
-    const branchId = req.body.branchId;
 
-    const [result] = await db.select().from(memberAccountTable).where(eq(memberAccountTable.memberId, memberId));
+    if (type !== "Delivery") {
+        const recipeId = req.body.recipeId;
+        const branchId = req.body.branchId;
 
-    if (!result) {
-        res.status(400).send({msg: "user not found"});
+        const [result] = await db.select().from(memberAccountTable).where(eq(memberAccountTable.memberId, memberId));
+
+        if (!result) {
+            res.status(400).send({msg: "user not found"});
+        }
+        else {
+            try {
+                    await db.insert(orderTable).values({branchId, recipeId, memberId, type});
+                    res.status(200).send({msg: "post order ok"});
+                } catch(err) {
+                    console.log(err);
+                    res.status(400).send({msg: "post order fail"});
+                }
+        }
     }
     else {
-        try {
-                await db.insert(orderTable).values({branchId, recipeId, memberId, type});
-                res.status(200).send({msg: "post order ok"});
-            } catch(err) {
-                console.log(err);
-                res.status(400).send({msg: "post order fail"});
-            }
+        const addItemList: AddItem[] = req.body.addItemList; 
+        let concentration = 0
+        let totalAmount = 0
+        let alcoholAmount = 0
+
+        const [result] = await db.select().from(memberAccountTable).where(eq(memberAccountTable.memberId, memberId));
+
+        if (!result) {
+            res.status(400).send({msg: "user not found"});
+        }
+        else {
+            try {
+                    const [result] = await db.insert(customizedOrderTable).values({memberId, concentration, type}).returning({customizedOrderId: customizedOrderTable.customizedOrderId});
+                    addItemList.forEach(async(addItem) => {
+                        totalAmount += addItem.amount;
+                        const [item] = await db.select({concentration: itemTable.concentration}).from(itemTable).where(eq(itemTable.itemId, addItem.itemId)).execute();
+                        if (item) {
+                            alcoholAmount += item.concentration ?? 0;
+                            await db.insert(addItemTable).values({customizedOrderId: result.customizedOrderId, itemId: addItem.itemId, amount: addItem.amount});
+                        } 
+                        
+                    });
+
+                    await db.update(customizedOrderTable).set({concentration});
+                    res.status(200).send({msg: "post customized order ok"});
+                } catch(err) {
+                    console.log(err);
+                    res.status(400).send({msg: "post customized order fail"});
+                }
+        }
     }
+    
 });
 
 app.post('/api/postCustomizedOrder', async(req, res) => {
@@ -186,6 +222,30 @@ app.post('/api/postCustomizedOrder', async(req, res) => {
                 res.status(400).send({msg: "post customized order fail"});
             }
     }
+});
+
+app.post('/api/postReservation', async(req, res) => {
+    const memberId = req.body.memberId;
+    const people = req.body.people;
+    const time = req.body.time;
+    const branchId = req.body.branchId;
+
+    const [result] = await db.select().from(memberAccountTable).where(eq(memberAccountTable.memberId, memberId));
+
+    if (!result) {
+        res.status(400).send({msg: "user not found"});
+    }
+    else {
+        try {
+                await db.insert(reserveTable).values({memberId, people, time: time, branchId}).returning({customizedOrderId: customizedOrderTable.customizedOrderId});
+                
+                res.status(200).send({msg: "post reservation ok"});
+            } catch(err) {
+                console.log(err);
+                res.status(400).send({msg: "post reservation fail"});
+            }
+    }
+    
 });
 
 
