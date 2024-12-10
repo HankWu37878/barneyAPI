@@ -2,7 +2,7 @@ import bodyParser from "body-parser";
 import cors from "cors";
 import express, { query } from "express";
 import { db } from "./db";
-import { addIngredientTable, addItemTable, branchTable, customizedOrderTable, itemTable, memberAccountTable, orderTable, recipeTable, reserveTable } from "./db/schema";
+import { addIngredientTable, addItemTable, branchTable, customizedOrderTable, drinkTypeTable, itemTable, memberAccountTable, orderTable, recipeTable, reserveTable } from "./db/schema";
 import bcrypt from "bcryptjs";
 import { and, count, desc, eq, isNull, or, sql, sum } from "drizzle-orm";
 import {
@@ -29,6 +29,16 @@ type Branch = {
     imageName: string;
 }
 
+type AvailableBranch = {
+    id: string;
+    name: string;
+    phone: string;
+    address: string;
+    seats: number;   
+    imageName: string;
+    availableSeats: number;
+}
+
 type Recipe = {
     id: string;
     drinkName: string;
@@ -45,12 +55,12 @@ type OrderItem = {
 }
 
 type AddItem = {
-    itemId: string;
+    id: string;
     amount: number; 
 }
 
 type AddIngredient = {
-    ingredientId: string;
+    id: string;
     amount: number; 
 }
 
@@ -78,59 +88,60 @@ app.get('/api/getAllBranches', async(_, res) => {
     }
 });
 
+app.get('/api/getAllTypes', async(_, res) => {
+    const types = await db.select({id: drinkTypeTable.typeId, name: drinkTypeTable.typeName}).from(drinkTypeTable).execute();
+    
+    if (types) {
+        res.status(200).send(types);
+    }
+    else {
+        res.status(400).send({msg: "get all types fail"});
+    }
+});
+
+app.get('/api/getItems', async(req, res) => {
+    const typeId = req.query.typeId;
+    const items = await db.select({id: itemTable.itemId, name: itemTable.itemName}).from(itemTable).where(eq(itemTable.typeId, String(typeId))).execute();
+    
+    if (items) {
+        res.status(200).send(items);
+    }
+    else {
+        res.status(400).send({msg: "get items fail"});
+    }
+});
+
 app.get('/api/getAvailableBranches', async(req, res) => {
     const date = String(req.query.date);
     const people = Number(req.query.people);
     const time = String(req.query.time);
 
     const queryTimeString = date + " " + time + ":00";
-    const queryTime = new Date(queryTimeString);
-    console.log(queryTime);
+    const selectedTime = new Date(queryTimeString);
 
-    const subquery = db
-    .select({
-        branchId: reserveTable.branchId,
-        time: reserveTable.time,
-        reserved: sql`SUM(${reserveTable.people})`.as("reserved"),
-    })
-    .from(reserveTable)
-    .groupBy(reserveTable.branchId, reserveTable.time)
-    .as("subquery");
+    
+    const ninetyMinutesBefore = new Date(selectedTime.getTime() - 90 * 60 * 1000); // Calculate 90 minutes before the selected time.
 
     const result = await db
     .select({
-        branchId: branchTable.branchId,
-        time: subquery.time,
-        reserved: subquery.reserved,
+        id: branchTable.branchId,
+        name: branchTable.branchName,
+        seats: branchTable.seatNumber,
+        phone: branchTable.branchPhone,
         address: branchTable.address,
-        branchName: branchTable.branchName,
-        seatNumber: branchTable.seatNumber,
-        branchPhone: branchTable.branchPhone,
+        // reservedSeats: sql`COALESCE(SUM(${reserveTable.people}), 0)`.as('ReservedSeats'),
+        availableSeats: sql`${branchTable.seatNumber} - COALESCE(SUM(${reserveTable.people}), 0)`.as('AvailableSeats'),
     })
     .from(branchTable)
-    .leftJoin(subquery, eq(branchTable.branchId, subquery.branchId))
-    .orderBy(desc(subquery.time), branchTable.branchId)
-    .execute();
-
-
-    const data = await db.select().from(branchTable).execute();
-    const branches: Branch[] = [];
-    const id = new Set();
-
-    result.map((b, i) => {
-        if ((Number(b.reserved) + people) > (b.seatNumber / 4) && b.time?.toString() === queryTime.toString()) {
-            id.add(b.branchId);
-        }
-    })
-
-    data.map((b, i) => {
-        branches.push({address: b.address, id: b.branchId, name: b.branchName, seats: b.seatNumber, phone: b.branchPhone, imageName: "branch" + String(i + 1)})
-    })
-
+    .leftJoin(reserveTable, sql`${branchTable.branchId} = ${reserveTable.branchId} AND ${reserveTable.time} BETWEEN ${ninetyMinutesBefore} AND ${selectedTime}`)
+    .groupBy(branchTable.branchId, branchTable.branchName, branchTable.seatNumber)
+    .having(sql`${branchTable.seatNumber} - COALESCE(SUM(${reserveTable.people}), 0) >= ${people}`);
     
+    const branches: AvailableBranch[] = [];
 
-    if (data) {
-        res.status(200).send(branches.filter((b) => b.id in id));
+    if (result) {
+        result.map((b, i) => branches.push({address: b.address, id: b.id, name: b.name, seats: b.seats, phone: b.phone, imageName: "branch" + String(i + 1), availableSeats: Number(b.availableSeats)}));
+        res.status(200).send(branches);
     }
     else {
         res.status(400).send({error: "get available branches wrong"});
@@ -194,22 +205,20 @@ app.post('/api/signup', async(req, res) => {
 });
 
 app.post('/api/postOrder', async(req, res) => {
-    const type = req.body.type;
+    const exist = req.body.type;
+    console.log(exist);
     const deliveryType = req.body.deliveryType;
     const memberId = req.body.memberId;
     const items: OrderItem[] = req.body.items;
-
+    const branchId: string = req.body.branchId;
     const [user] = await db.select().from(memberAccountTable).where(eq(memberAccountTable.memberId, memberId));
+    const [branch] = await db.select().from(branchTable).where(eq(branchTable.branchId, branchId));
     if (!user) {
         res.status(400).send({msg: "user not found"});
     }
     console.log(items);
 
-    if (deliveryType !== "Delivery") {
-        const branchId: string = req.body.branchId;
-
-        
-        const [branch] = await db.select().from(branchTable).where(eq(branchTable.branchId, branchId));
+    if (exist) {
         if (!branch) {
             res.status(400).send({msg: "branch not found"});
         }
@@ -224,11 +233,12 @@ app.post('/api/postOrder', async(req, res) => {
         }
     }
     else {
-        const addItemList: AddItem[] = req.body.addItemList; 
         let concentration = 0
         let totalAmount = 0
         let alcoholAmount = 0
-
+        if (!branch) {
+            res.status(400).send({msg: "branch not found"});
+        }
         const [result] = await db.select().from(memberAccountTable).where(eq(memberAccountTable.memberId, memberId));
 
         if (!result) {
@@ -236,13 +246,13 @@ app.post('/api/postOrder', async(req, res) => {
         }
         else {
             try {
-                    const [result] = await db.insert(customizedOrderTable).values({memberId, concentration, type}).returning({customizedOrderId: customizedOrderTable.customizedOrderId});
-                    addItemList.forEach(async(addItem) => {
+                    const [result] = await db.insert(customizedOrderTable).values({memberId, concentration, type: deliveryType, branchId}).returning({customizedOrderId: customizedOrderTable.customizedOrderId});
+                    items.forEach(async(addItem) => {
                         totalAmount += addItem.amount;
-                        const [item] = await db.select({concentration: itemTable.concentration}).from(itemTable).where(eq(itemTable.itemId, addItem.itemId)).execute();
+                        const [item] = await db.select({concentration: itemTable.concentration}).from(itemTable).where(eq(itemTable.itemId, addItem.id)).execute();
                         if (item) {
                             alcoholAmount += item.concentration ?? 0;
-                            await db.insert(addItemTable).values({customizedOrderId: result.customizedOrderId, itemId: addItem.itemId, amount: addItem.amount});
+                            await db.insert(addItemTable).values({customizedOrderId: result.customizedOrderId, itemId: addItem.id, amount: addItem.amount});
                         } 
                         
                     });
@@ -258,50 +268,58 @@ app.post('/api/postOrder', async(req, res) => {
     
 });
 
-app.post('/api/postCustomizedOrder', async(req, res) => {
-    const type = req.body.type;
-    const memberId = req.body.memberId;
-    const addItemList: AddItem[] = req.body.addItemList;
-    const addIngredientList: AddIngredient[] = req.body.addIngredientList;
-    let concentration = 0
-    let totalAmount = 0
-    let alcoholAmount = 0
+// app.post('/api/postCustomizedOrder', async(req, res) => {
+//     const type = req.body.type;
+//     const memberId = req.body.memberId;
+//     const addItemList: AddItem[] = req.body.addItemList;
+//     const addIngredientList: AddIngredient[] = req.body.addIngredientList;
+//     let concentration = 0
+//     let totalAmount = 0
+//     let alcoholAmount = 0
 
-    const [result] = await db.select().from(memberAccountTable).where(eq(memberAccountTable.memberId, memberId));
+//     const [result] = await db.select().from(memberAccountTable).where(eq(memberAccountTable.memberId, memberId));
 
-    if (!result) {
-        res.status(400).send({msg: "user not found"});
-    }
-    else {
-        try {
-                const [result] = await db.insert(customizedOrderTable).values({memberId, concentration, type}).returning({customizedOrderId: customizedOrderTable.customizedOrderId});
-                addItemList.forEach(async(addItem) => {
-                    totalAmount += addItem.amount;
-                    const [item] = await db.select({concentration: itemTable.concentration}).from(itemTable).where(eq(itemTable.itemId, addItem.itemId)).execute();
-                    if (item) {
-                        alcoholAmount += item.concentration ?? 0;
-                        await db.insert(addItemTable).values({customizedOrderId: result.customizedOrderId, itemId: addItem.itemId, amount: addItem.amount});
-                    } 
+//     if (!result) {
+//         res.status(400).send({msg: "user not found"});
+//     }
+//     else {
+//         try {
+//                 const [result] = await db.insert(customizedOrderTable).values({memberId, concentration, type}).returning({customizedOrderId: customizedOrderTable.customizedOrderId});
+//                 addItemList.forEach(async(addItem) => {
+//                     totalAmount += addItem.amount;
+//                     const [item] = await db.select({concentration: itemTable.concentration}).from(itemTable).where(eq(itemTable.itemId, addItem.id)).execute();
+//                     if (item) {
+//                         alcoholAmount += item.concentration ?? 0;
+//                         await db.insert(addItemTable).values({customizedOrderId: result.customizedOrderId, itemId: addItem.id, amount: addItem.amount});
+//                     } 
                     
-                });
-                addIngredientList.forEach(async(addIngredient) => {
-                    await db.insert(addIngredientTable).values({customizedOrderId: result.customizedOrderId, ingredientId: addIngredient.ingredientId, amount: addIngredient.amount});
-                });
+//                 });
+//                 addIngredientList.forEach(async(addIngredient) => {
+//                     await db.insert(addIngredientTable).values({customizedOrderId: result.customizedOrderId, ingredientId: addIngredient.id, amount: addIngredient.amount});
+//                 });
 
-                await db.update(customizedOrderTable).set({concentration});
-                res.status(200).send({msg: "post customized order ok"});
-            } catch(err) {
-                console.log(err);
-                res.status(400).send({msg: "post customized order fail"});
-            }
-    }
-});
+//                 await db.update(customizedOrderTable).set({concentration});
+//                 res.status(200).send({msg: "post customized order ok"});
+//             } catch(err) {
+//                 console.log(err);
+//                 res.status(400).send({msg: "post customized order fail"});
+//             }
+//     }
+// });
 
 app.post('/api/postReservation', async(req, res) => {
     const memberId = req.body.memberId;
-    const people = req.body.people;
-    const time = req.body.time;
     const branchId = req.body.branchId;
+    const date = String(req.body.date);
+    const people = Number(req.body.people);
+    const time = String(req.body.time);
+
+    const queryTimeString = `${date} ${time}:00`;
+    const [year, month, day] = date.split('-'); // Assuming the date format is YYYY-MM-DD
+    const [hour, minute] = time.split(':');
+    const selectedTime = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute))); // Use UTC to prevent time zone conversion
+
+    
 
     const [result] = await db.select().from(memberAccountTable).where(eq(memberAccountTable.memberId, memberId));
 
@@ -310,12 +328,17 @@ app.post('/api/postReservation', async(req, res) => {
     }
     else {
         try {
-                await db.insert(reserveTable).values({memberId, people, time: time, branchId}).returning({customizedOrderId: customizedOrderTable.customizedOrderId});
+                console.log(memberId);
+                console.log(branchId);
+                console.log(date);
+                console.log(people);
+                console.log(time);
+                await db.insert(reserveTable).values({memberId, people, time: selectedTime, branchId}).execute();
                 
-                res.status(200).send({msg: "post reservation ok"});
+                res.status(200).send("post reservation ok");
             } catch(err) {
                 console.log(err);
-                res.status(400).send({msg: "post reservation fail"});
+                res.status(400).send("post reservation fail");
             }
     }
     

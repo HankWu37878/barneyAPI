@@ -97,10 +97,15 @@ export const adminTable = pgTable(
       customizedOrderId: uuid("customizedorderid").defaultRandom().primaryKey(),
       concentration:  integer("concentration"),
       time: timestamp("time"),
-      type:  varchar("type", { length: 10 }).notNull(),
+      type:  varchar("ordertype", { length: 10 }).notNull(),
       memberId: uuid("memberid")
         .notNull()
         .references(() => memberAccountTable.memberId, {
+            onDelete: "cascade",
+      }),
+      branchId: uuid("branchid")
+        .notNull()
+        .references(() => branchTable.branchId, {
             onDelete: "cascade",
       }),
     },
@@ -211,7 +216,7 @@ export const adminTable = pgTable(
             onDelete: "cascade",
         }),
         people: integer("people"),
-        time: timestamp("time"),
+        time: timestamp("time").notNull(),
     },
     (table) => {
         return {
