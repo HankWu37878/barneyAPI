@@ -1,10 +1,10 @@
 import bodyParser from "body-parser";
 import cors from "cors";
-import express from "express";
+import express, { query } from "express";
 import { db } from "./db";
 import { addIngredientTable, addItemTable, branchTable, customizedOrderTable, itemTable, memberAccountTable, orderTable, recipeTable, reserveTable } from "./db/schema";
 import bcrypt from "bcryptjs";
-import { and, eq, or } from "drizzle-orm";
+import { and, count, desc, eq, isNull, or, sql, sum } from "drizzle-orm";
 import {
     index,
     pgTable,
@@ -18,6 +18,7 @@ import {
     date,
     char,
   } from "drizzle-orm/pg-core";
+import { error } from "console";
 
 type Branch = {
     id: string;
@@ -35,6 +36,12 @@ type Recipe = {
     mood: string;
     intensity: number;   
     // imageName: string;
+}
+
+type OrderItem = {
+    id: string;
+    amount: number;
+    unit: string;
 }
 
 type AddItem = {
@@ -68,6 +75,65 @@ app.get('/api/getAllBranches', async(_, res) => {
     }
     else {
         res.status(400).send({msg: "get all branches fail"});
+    }
+});
+
+app.get('/api/getAvailableBranches', async(req, res) => {
+    const date = String(req.query.date);
+    const people = Number(req.query.people);
+    const time = String(req.query.time);
+
+    const queryTimeString = date + " " + time + ":00";
+    const queryTime = new Date(queryTimeString);
+    console.log(queryTime);
+
+    const subquery = db
+    .select({
+        branchId: reserveTable.branchId,
+        time: reserveTable.time,
+        reserved: sql`SUM(${reserveTable.people})`.as("reserved"),
+    })
+    .from(reserveTable)
+    .groupBy(reserveTable.branchId, reserveTable.time)
+    .as("subquery");
+
+    const result = await db
+    .select({
+        branchId: branchTable.branchId,
+        time: subquery.time,
+        reserved: subquery.reserved,
+        address: branchTable.address,
+        branchName: branchTable.branchName,
+        seatNumber: branchTable.seatNumber,
+        branchPhone: branchTable.branchPhone,
+    })
+    .from(branchTable)
+    .leftJoin(subquery, eq(branchTable.branchId, subquery.branchId))
+    .orderBy(desc(subquery.time), branchTable.branchId)
+    .execute();
+
+
+    const data = await db.select().from(branchTable).execute();
+    const branches: Branch[] = [];
+    const id = new Set();
+
+    result.map((b, i) => {
+        if ((Number(b.reserved) + people) > (b.seatNumber / 4) && b.time?.toString() === queryTime.toString()) {
+            id.add(b.branchId);
+        }
+    })
+
+    data.map((b, i) => {
+        branches.push({address: b.address, id: b.branchId, name: b.branchName, seats: b.seatNumber, phone: b.branchPhone, imageName: "branch" + String(i + 1)})
+    })
+
+    
+
+    if (data) {
+        res.status(200).send(branches.filter((b) => b.id in id));
+    }
+    else {
+        res.status(400).send({error: "get available branches wrong"});
     }
 });
 
@@ -129,24 +195,31 @@ app.post('/api/signup', async(req, res) => {
 
 app.post('/api/postOrder', async(req, res) => {
     const type = req.body.type;
+    const deliveryType = req.body.deliveryType;
     const memberId = req.body.memberId;
+    const items: OrderItem[] = req.body.items;
 
-    if (type !== "Delivery") {
-        const recipeId = req.body.recipeId;
-        const branchId = req.body.branchId;
+    const [user] = await db.select().from(memberAccountTable).where(eq(memberAccountTable.memberId, memberId));
+    if (!user) {
+        res.status(400).send({msg: "user not found"});
+    }
+    console.log(items);
 
-        const [result] = await db.select().from(memberAccountTable).where(eq(memberAccountTable.memberId, memberId));
+    if (deliveryType !== "Delivery") {
+        const branchId: string = req.body.branchId;
 
-        if (!result) {
-            res.status(400).send({msg: "user not found"});
+        
+        const [branch] = await db.select().from(branchTable).where(eq(branchTable.branchId, branchId));
+        if (!branch) {
+            res.status(400).send({msg: "branch not found"});
         }
         else {
             try {
-                    await db.insert(orderTable).values({branchId, recipeId, memberId, type});
-                    res.status(200).send({msg: "post order ok"});
+                    await db.insert(orderTable).values({branchId: branch.branchId, recipeId: items[0].id, memberId: user.memberId, type: deliveryType});
+                    res.status(200).send("post order ok");
                 } catch(err) {
                     console.log(err);
-                    res.status(400).send({msg: "post order fail"});
+                    res.status(400).send("post order fail");
                 }
         }
     }
