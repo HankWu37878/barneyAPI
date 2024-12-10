@@ -5,6 +5,7 @@ import { db } from "./db";
 import { addIngredientTable, addItemTable, branchTable, customizedOrderTable, drinkTypeTable, itemTable, memberAccountTable, orderTable, recipeTable, reserveTable } from "./db/schema";
 import bcrypt from "bcryptjs";
 import { and, count, desc, eq, isNull, or, sql, sum } from "drizzle-orm";
+
 import {
     index,
     pgTable,
@@ -204,145 +205,138 @@ app.post('/api/signup', async(req, res) => {
     }
 });
 
-app.post('/api/postOrder', async(req, res) => {
-    const exist = req.body.type;
-    console.log(exist);
-    const deliveryType = req.body.deliveryType;
-    const memberId = req.body.memberId;
-    const items: OrderItem[] = req.body.items;
-    const branchId: string = req.body.branchId;
-    const [user] = await db.select().from(memberAccountTable).where(eq(memberAccountTable.memberId, memberId));
-    const [branch] = await db.select().from(branchTable).where(eq(branchTable.branchId, branchId));
-    if (!user) {
-        res.status(400).send({msg: "user not found"});
-    }
-    console.log(items);
-
-    if (exist) {
+app.post('/api/postOrder', async (req, res) => {
+    try {
+      await db.transaction(async (trx) => {
+        const exist = req.body.type;
+        const deliveryType = req.body.deliveryType;
+        const memberId = req.body.memberId;
+        const items: OrderItem[] = req.body.items;
+        const branchId: string = req.body.branchId;
+  
+        // Lock the branch row for updates
+        const [branch] = await trx
+          .select()
+          .from(branchTable)
+          .where(eq(branchTable.branchId, branchId))
+          .for('update', { skipLocked: true }); // Lock acquired on the branch row
+  
         if (!branch) {
-            res.status(400).send({msg: "branch not found"});
+          throw new Error("branch not found");
         }
-        else {
-            try {
-                    await db.insert(orderTable).values({branchId: branch.branchId, recipeId: items[0].id, memberId: user.memberId, type: deliveryType});
-                    res.status(200).send("post order ok");
-                } catch(err) {
-                    console.log(err);
-                    res.status(400).send("post order fail");
-                }
+  
+        // Lock the user row for updates
+        const [user] = await trx
+          .select()
+          .from(memberAccountTable)
+          .where(eq(memberAccountTable.memberId, memberId))
+          .for('update', { skipLocked: true }); // Lock acquired on the user row
+  
+        if (!user) {
+          throw new Error("user not found");
         }
-    }
-    else {
-        let concentration = 0
-        let totalAmount = 0
-        let alcoholAmount = 0
-        if (!branch) {
-            res.status(400).send({msg: "branch not found"});
-        }
-        const [result] = await db.select().from(memberAccountTable).where(eq(memberAccountTable.memberId, memberId));
-
-        if (!result) {
-            res.status(400).send({msg: "user not found"});
-        }
-        else {
-            try {
-                    const [result] = await db.insert(customizedOrderTable).values({memberId, concentration, type: deliveryType, branchId}).returning({customizedOrderId: customizedOrderTable.customizedOrderId});
-                    items.forEach(async(addItem) => {
-                        totalAmount += addItem.amount;
-                        const [item] = await db.select({concentration: itemTable.concentration}).from(itemTable).where(eq(itemTable.itemId, addItem.id)).execute();
-                        if (item) {
-                            alcoholAmount += item.concentration ?? 0;
-                            await db.insert(addItemTable).values({customizedOrderId: result.customizedOrderId, itemId: addItem.id, amount: addItem.amount});
-                        } 
-                        
-                    });
-
-                    await db.update(customizedOrderTable).set({concentration});
-                    res.status(200).send({msg: "post customized order ok"});
-                } catch(err) {
-                    console.log(err);
-                    res.status(400).send({msg: "post customized order fail"});
-                }
-        }
-    }
-    
-});
-
-// app.post('/api/postCustomizedOrder', async(req, res) => {
-//     const type = req.body.type;
-//     const memberId = req.body.memberId;
-//     const addItemList: AddItem[] = req.body.addItemList;
-//     const addIngredientList: AddIngredient[] = req.body.addIngredientList;
-//     let concentration = 0
-//     let totalAmount = 0
-//     let alcoholAmount = 0
-
-//     const [result] = await db.select().from(memberAccountTable).where(eq(memberAccountTable.memberId, memberId));
-
-//     if (!result) {
-//         res.status(400).send({msg: "user not found"});
-//     }
-//     else {
-//         try {
-//                 const [result] = await db.insert(customizedOrderTable).values({memberId, concentration, type}).returning({customizedOrderId: customizedOrderTable.customizedOrderId});
-//                 addItemList.forEach(async(addItem) => {
-//                     totalAmount += addItem.amount;
-//                     const [item] = await db.select({concentration: itemTable.concentration}).from(itemTable).where(eq(itemTable.itemId, addItem.id)).execute();
-//                     if (item) {
-//                         alcoholAmount += item.concentration ?? 0;
-//                         await db.insert(addItemTable).values({customizedOrderId: result.customizedOrderId, itemId: addItem.id, amount: addItem.amount});
-//                     } 
-                    
-//                 });
-//                 addIngredientList.forEach(async(addIngredient) => {
-//                     await db.insert(addIngredientTable).values({customizedOrderId: result.customizedOrderId, ingredientId: addIngredient.id, amount: addIngredient.amount});
-//                 });
-
-//                 await db.update(customizedOrderTable).set({concentration});
-//                 res.status(200).send({msg: "post customized order ok"});
-//             } catch(err) {
-//                 console.log(err);
-//                 res.status(400).send({msg: "post customized order fail"});
-//             }
-//     }
-// });
-
-app.post('/api/postReservation', async(req, res) => {
-    const memberId = req.body.memberId;
-    const branchId = req.body.branchId;
-    const date = String(req.body.date);
-    const people = Number(req.body.people);
-    const time = String(req.body.time);
-
-    const queryTimeString = `${date} ${time}:00`;
-    const [year, month, day] = date.split('-'); // Assuming the date format is YYYY-MM-DD
-    const [hour, minute] = time.split(':');
-    const selectedTime = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute))); // Use UTC to prevent time zone conversion
-
-    
-
-    const [result] = await db.select().from(memberAccountTable).where(eq(memberAccountTable.memberId, memberId));
-
-    if (!result) {
-        res.status(400).send({msg: "user not found"});
-    }
-    else {
-        try {
-                console.log(memberId);
-                console.log(branchId);
-                console.log(date);
-                console.log(people);
-                console.log(time);
-                await db.insert(reserveTable).values({memberId, people, time: selectedTime, branchId}).execute();
-                
-                res.status(200).send("post reservation ok");
-            } catch(err) {
-                console.log(err);
-                res.status(400).send("post reservation fail");
+  
+        if (exist) {
+          await trx.insert(orderTable).values({
+            branchId: branch.branchId,
+            recipeId: items[0].id,
+            memberId: user.memberId,
+            type: deliveryType,
+          });
+        } else {
+          let concentration = 0;
+          const [customizedOrder] = await trx
+            .insert(customizedOrderTable)
+            .values({ memberId, concentration, type: deliveryType, branchId })
+            .returning({ customizedOrderId: customizedOrderTable.customizedOrderId });
+  
+          for (const addItem of items) {
+            const [item] = await trx
+              .select({ concentration: itemTable.concentration })
+              .from(itemTable)
+              .where(eq(itemTable.itemId, addItem.id))
+              .execute();
+  
+            if (item) {
+              concentration += (item.concentration ?? 0) * addItem.amount;
+              await trx.insert(addItemTable).values({
+                customizedOrderId: customizedOrder.customizedOrderId,
+                itemId: addItem.id,
+                amount: addItem.amount,
+              });
             }
+          }
+  
+          await trx
+            .update(customizedOrderTable)
+            .set({ concentration })
+            .where(eq(customizedOrderTable.customizedOrderId, customizedOrder.customizedOrderId));
+        }
+      });
+  
+      res.status(200).send({ msg: "post order ok" });
+    } catch (err) {
+      console.error(err);
+      res.status(400).send({ msg: "post order fail" });
     }
-    
-});
+  });
+  
+
+
+
+  app.post('/api/postReservation', async (req, res) => {
+    try {
+      await db.transaction(async (trx) => {
+        const memberId = req.body.memberId;
+        const branchId = req.body.branchId;
+        const date = String(req.body.date);
+        const people = Number(req.body.people);
+        const time = String(req.body.time);
+  
+        const queryTimeString = `${date} ${time}:00`;
+        const [year, month, day] = date.split('-'); // Assuming the date format is YYYY-MM-DD
+        const [hour, minute] = time.split(':');
+        const selectedTime = new Date(
+          Date.UTC(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute))
+        ); // Use UTC to prevent time zone conversion
+  
+        // Lock the branch row for updates
+        const [branch] = await trx
+          .select()
+          .from(branchTable)
+          .where(eq(branchTable.branchId, branchId))
+          .for('update', { skipLocked: true }); // Lock acquired on the branch row
+  
+        if (!branch) {
+          throw new Error("branch not found");
+        }
+  
+        // Lock the user row for updates
+        const [user] = await trx
+          .select()
+          .from(memberAccountTable)
+          .where(eq(memberAccountTable.memberId, memberId))
+          .for('update', { skipLocked: true }); // Lock acquired on the user row
+  
+        if (!user) {
+          throw new Error("user not found");
+        }
+  
+        // Insert the reservation
+        await trx.insert(reserveTable).values({
+          memberId,
+          people,
+          time: selectedTime,
+          branchId,
+        });
+        res.status(200).send("post reservation ok");
+      });
+    } catch (err) {
+      console.error(err);
+      res.status(400).send("post reservation fail");
+    }
+  });
+  
 
 
 
