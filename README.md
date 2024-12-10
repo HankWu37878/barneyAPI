@@ -8,7 +8,7 @@
 在專案根目錄下建立一個 `.env` 檔案，並填入以下內容：
 ```env
 POSTGRES_URL=postgres://<username>:<password>@localhost:5432/<database_name>
-PORT=3457
+PORT=<any port number>
 ```
 請將 `<username>`、`<password>` 和 `<database_name>` 替換為 PostgreSQL 中的使用者名稱、密碼和資料庫名稱。
 
